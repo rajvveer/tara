@@ -1,0 +1,5 @@
+#include "Generated.xcconfig"
+GOOGLE_CLIENT_ID=
+GOOGLE_SERVER_CLIENT_ID=
+REVERSED_GOOGLE_CLIENT_ID=
+INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsLocalNetworking = YES
