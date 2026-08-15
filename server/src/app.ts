@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { createRequire } from "node:module";
 import express from "express";
 import cors from "cors";
-import * as helmet from "helmet";
 import { rateLimit } from "express-rate-limit";
 import swaggerUi from "swagger-ui-express";
 import { config } from "./config.js";
@@ -9,6 +9,8 @@ import { prisma } from "./db.js";
 import { ApiError, errorHandler, notFound } from "./errors.js";
 import { openapi } from "./openapi.js";
 import router from "./routes.js";
+
+const helmet = createRequire(import.meta.url)("helmet") as (options?: object) => express.RequestHandler;
 
 export const app = express();
 
@@ -19,7 +21,7 @@ app.use((request, response, next) => {
   response.setHeader("x-request-id", request.id);
   next();
 });
-app.use(helmet.default({ contentSecurityPolicy: config.NODE_ENV === "production" ? undefined : false }));
+app.use(helmet({ contentSecurityPolicy: config.NODE_ENV === "production" ? undefined : false }));
 app.use(cors({
   origin(origin, callback) {
     if (!origin || config.corsOrigins.includes("*") || config.corsOrigins.includes(origin)) callback(null, true);
