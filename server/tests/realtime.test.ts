@@ -3,6 +3,7 @@ import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { issueAccessToken } from "../src/auth.js";
+import { isAllowedOrigin } from "../src/config.js";
 import { attachRealtime } from "../src/realtime.js";
 
 vi.mock("../src/sarvam.js", () => ({
@@ -26,6 +27,13 @@ describe("realtime transport", () => {
   afterEach(async () => {
     openSockets.forEach((socket) => socket.terminate());
     await Promise.all(openServers.map((server) => new Promise<void>((resolve) => server.close(() => resolve()))));
+  });
+
+  it("ships the upgrade handler and permits only configured or same-host origins", async () => {
+    const { default: deployedServer } = await import("../src/app.js");
+    expect(deployedServer.listenerCount("upgrade")).toBeGreaterThan(0);
+    expect(isAllowedOrigin("https://api.example.com", "api.example.com")).toBe(true);
+    expect(isAllowedOrigin("https://evil.example", "api.example.com")).toBe(false);
   });
 
   it("authenticates once and rejects unknown events without dropping the socket", async () => {

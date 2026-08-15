@@ -43,3 +43,12 @@ export const config = {
   corsOrigins: parsed.data.CORS_ORIGINS.split(",").map((origin) => origin.trim()).filter(Boolean),
   googleClientIds: parsed.data.GOOGLE_CLIENT_IDS.split(",").map((id) => id.trim()).filter(Boolean),
 };
+
+export function isAllowedOrigin(origin?: string, host?: string) {
+  if (!origin || config.corsOrigins.includes("*") || config.corsOrigins.includes(origin)) return true;
+  try {
+    return Boolean(host) && new URL(origin).host === host;
+  } catch {
+    return false;
+  }
+}

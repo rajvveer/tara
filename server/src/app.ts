@@ -1,13 +1,15 @@
 import { randomUUID } from "node:crypto";
+import { createServer } from "node:http";
 import express from "express";
 import cors from "cors";
 import helmetModule from "helmet";
 import { rateLimit } from "express-rate-limit";
 import swaggerUi from "swagger-ui-express";
-import { config } from "./config.js";
+import { config, isAllowedOrigin } from "./config.js";
 import { prisma } from "./db.js";
 import { ApiError, errorHandler, notFound } from "./errors.js";
 import { openapi } from "./openapi.js";
+import { attachRealtime } from "./realtime.js";
 import router from "./routes.js";
 
 const helmet = helmetModule as unknown as (options?: object) => express.RequestHandler;
@@ -22,14 +24,14 @@ app.use((request, response, next) => {
   next();
 });
 app.use(helmet({ contentSecurityPolicy: config.NODE_ENV === "production" ? undefined : false }));
-app.use(cors({
+app.use((request, response, next) => cors({
   origin(origin, callback) {
-    if (!origin || config.corsOrigins.includes("*") || config.corsOrigins.includes(origin)) callback(null, true);
+    if (isAllowedOrigin(origin, request.get("host"))) callback(null, true);
     else callback(new ApiError(403, "ORIGIN_NOT_ALLOWED", "This origin is not allowed."));
   },
   allowedHeaders: ["Authorization", "Content-Type", "X-Request-Id"],
   methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-}));
+})(request, response, next));
 // Voice turns contain up to 25 seconds of base64 PCM audio. All other JSON stays small.
 app.use("/api/v1/voice/onboarding/turn", express.json({ limit: "1400kb" }));
 app.use(express.json({ limit: "100kb" }));
@@ -51,4 +53,7 @@ app.use("/api/v1", router);
 app.use(notFound);
 app.use(errorHandler);
 
-export default app;
+export const server = createServer(app);
+export const realtime = attachRealtime(server);
+
+export default server;

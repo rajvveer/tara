@@ -1,13 +1,11 @@
-import { app } from "./app.js";
+import { realtime, server } from "./app.js";
 import { config } from "./config.js";
 import { prisma } from "./db.js";
 import { runMaintenance } from "./maintenance.js";
-import { attachRealtime } from "./realtime.js";
 
-const server = app.listen(config.PORT, () => {
+server.listen(config.PORT, () => {
   console.log(JSON.stringify({ level: "info", message: "GoalSpring API listening", port: config.PORT, environment: config.NODE_ENV }));
 });
-const realtime = attachRealtime(server);
 
 let maintenanceRunning = false;
 async function maintain() {

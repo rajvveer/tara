@@ -3,7 +3,7 @@ import { z, ZodError } from "zod";
 import WebSocket, { WebSocketServer } from "ws";
 import { verifyAccessToken } from "./auth.js";
 import { chatTurnSchema, streamCoachReply } from "./chat.js";
-import { config } from "./config.js";
+import { isAllowedOrigin } from "./config.js";
 import { ApiError } from "./errors.js";
 import { startVoiceOnboarding, voiceOnboardingTurn } from "./sarvam.js";
 import { voiceStartSchema, voiceTurnSchema } from "./schemas.js";
@@ -34,8 +34,7 @@ export function attachRealtime(server: HttpServer) {
   server.on("upgrade", (request, socket, head) => {
     const pathname = new URL(request.url ?? "/", "http://localhost").pathname;
     const origin = request.headers.origin;
-    const allowedOrigin = !origin || config.corsOrigins.includes("*") || config.corsOrigins.includes(origin);
-    if (pathname !== "/api/v1/realtime" || !allowedOrigin) return socket.destroy();
+    if (pathname !== "/api/v1/realtime" || !isAllowedOrigin(origin, request.headers.host)) return socket.destroy();
     sockets.handleUpgrade(request, socket, head, (webSocket) => sockets.emit("connection", webSocket));
   });
 
