@@ -50,3 +50,5 @@ app.use("/api/v1/voice", rateLimit({ windowMs: 60_000, limit: 15, standardHeader
 app.use("/api/v1", router);
 app.use(notFound);
 app.use(errorHandler);
+
+export default app;
