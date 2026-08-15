@@ -277,13 +277,13 @@ class _NeumorphicField extends StatelessWidget {
                     : Colors.white
               : Colors.transparent,
           labelStyle: theme.textTheme.bodySmall?.copyWith(
-            color: OnwardColors.ink.withValues(alpha: .72),
+            color: theme.colorScheme.onSurface.withValues(alpha: .72),
             fontSize: 13,
             fontWeight: FontWeight.w600,
             letterSpacing: 0,
           ),
           hintStyle: theme.textTheme.bodyMedium?.copyWith(
-            color: OnwardColors.ink.withValues(alpha: .5),
+            color: theme.colorScheme.onSurface.withValues(alpha: .5),
             fontSize: 14,
             height: 1.35,
             letterSpacing: 0,
@@ -1413,7 +1413,10 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       final speaking =
           state.playing && state.processingState == ProcessingState.ready;
       if (_voiceSpeaking != speaking) {
-        setState(() => _voiceSpeaking = speaking);
+        setState(() {
+          _voiceSpeaking = speaking;
+          _voiceBusy = !speaking;
+        });
       }
       if (speaking) _startTypewriter();
       if (state.processingState == ProcessingState.completed) {
@@ -1614,7 +1617,6 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         _voiceEnvelope = const [];
         _voiceDuration = Duration.zero;
         _voiceComplete = false;
-        _voiceBusy = false;
         _voiceError = null;
       });
       unawaited(_playLiveVoice(source, finishAfterSpeech: complete));
@@ -1647,7 +1649,6 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
           _voiceEnvelope = lipTrack.envelope;
           _voiceDuration = lipTrack.duration;
           _voiceComplete = false;
-          _voiceBusy = false;
           _voiceError = null;
         });
         unawaited(_playVoice(audio, finishAfterSpeech: complete));
@@ -2259,9 +2260,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
               speechText: _voiceSpeechText,
               speechEnvelope: _voiceEnvelope,
               error: _voiceError,
-              onSpeak: () => unawaited(
-                _recording ? _finishRecording() : _startListening(),
-              ),
+              onSpeak: () => unawaited(_startListening()),
             )
           : _GoalSetupStep(
               objective: _objective,
@@ -2701,14 +2700,20 @@ class _VoiceOnboardingStep extends StatelessWidget {
         ],
         if (!busy && !speaking && !complete) ...[
           const SizedBox(height: 16),
-          SizedBox(
-            height: 54,
-            child: FilledButton.icon(
-              key: const ValueKey('voice-onboarding-mic'),
-              onPressed: onSpeak,
-              icon: Icon(recording ? Icons.stop_rounded : Icons.mic_rounded),
-              label: Text(recording ? 'Done speaking' : 'Tap to speak'),
-            ),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              IconButton.filled(
+                key: const ValueKey('voice-onboarding-mic'),
+                onPressed: recording ? null : onSpeak,
+                tooltip: recording ? 'Listening' : 'Tap to speak',
+                icon: Icon(
+                  recording ? Icons.graphic_eq_rounded : Icons.mic_rounded,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Text(recording ? 'Listening…' : 'Tap to speak'),
+            ],
           ),
         ],
         const SizedBox(height: 10),
@@ -2726,8 +2731,8 @@ class _VoiceOnboardingStep extends StatelessWidget {
                 complete
                     ? 'Your answers are ready to review.'
                     : recording
-                    ? 'Tap Done speaking when you finish your answer.'
-                    : 'Tap to speak when you are ready · audio isn’t stored.',
+                    ? 'Stops automatically when you pause.'
+                    : 'Tap the mic when you are ready · audio isn’t stored.',
                 textAlign: TextAlign.center,
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
                   color: onwardMuted(context),

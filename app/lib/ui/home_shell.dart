@@ -74,7 +74,6 @@ class _HomeShellState extends State<HomeShell> {
       const ProfileScreen(),
     ];
     return Scaffold(
-      extendBody: true,
       body: Column(
         children: [
           if (state.offline) const OfflineBanner(),
@@ -194,6 +193,8 @@ class _FloatingNavigation extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final deviceLeftInset = MediaQuery.paddingOf(context).left;
+    final navLeftInset = deviceLeftInset > 7 ? deviceLeftInset : 7.0;
     return SafeArea(
       top: false,
       minimum: const EdgeInsets.fromLTRB(7, 0, 7, 7),
@@ -210,12 +211,7 @@ class _FloatingNavigation extends StatelessWidget {
             color: scheme.surface,
             surfaceTintColor: Colors.transparent,
             clipBehavior: Clip.antiAlias,
-            shape: const AutomaticNotchedShape(
-              RoundedRectangleBorder(
-                borderRadius: BorderRadius.all(Radius.circular(20)),
-              ),
-              CircleBorder(),
-            ),
+            shape: _SafeAreaNotchedShape(navLeftInset),
             notchMargin: 6,
             // Liquid-glass BackdropFilter paused while using a solid navbar.
             child: Row(
@@ -281,6 +277,28 @@ class _FloatingNavigation extends StatelessWidget {
       ),
     );
   }
+}
+
+class _SafeAreaNotchedShape extends NotchedShape {
+  const _SafeAreaNotchedShape(this.leftInset);
+
+  final double leftInset;
+
+  static const _delegate = AutomaticNotchedShape(
+    RoundedRectangleBorder(borderRadius: BorderRadius.all(Radius.circular(20))),
+    CircleBorder(),
+  );
+
+  @override
+  Path getOuterPath(Rect host, Rect? guest) =>
+      _delegate.getOuterPath(host, guest?.translate(-leftInset, 0));
+
+  @override
+  bool operator ==(Object other) =>
+      other is _SafeAreaNotchedShape && other.leftInset == leftInset;
+
+  @override
+  int get hashCode => leftInset.hashCode;
 }
 
 class _TaraNavigationButton extends StatelessWidget {

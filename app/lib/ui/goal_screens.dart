@@ -648,14 +648,17 @@ class _DetailNextAction extends StatelessWidget {
           ),
         ),
         const SizedBox(width: 12),
-        IconButton.filled(
-          style: IconButton.styleFrom(
-            backgroundColor: Theme.of(context).colorScheme.surface,
-            foregroundColor: Theme.of(context).colorScheme.primary,
+        Tooltip(
+          message: 'Mark complete',
+          child: Checkbox(
+            value: false,
+            onChanged: (_) => onComplete(),
+            shape: const CircleBorder(),
+            side: BorderSide(
+              color: Theme.of(context).colorScheme.primary,
+              width: 1.6,
+            ),
           ),
-          onPressed: onComplete,
-          tooltip: 'Mark complete',
-          icon: const Icon(Icons.check_rounded),
         ),
       ],
     ),

@@ -1509,6 +1509,16 @@ void main() {
       expect(tester.getSize(ring), const Size.square(154));
       expect(find.textContaining('actions complete'), findsOneWidget);
       expect(find.textContaining('remaining'), findsOneWidget);
+      await tester.scrollUntilVisible(
+        find.byType(Checkbox),
+        180,
+        scrollable: find.byType(Scrollable).first,
+      );
+      final nextActionControl = tester.widget<Checkbox>(
+        find.byType(Checkbox).first,
+      );
+      expect(nextActionControl.value, isFalse);
+      expect(nextActionControl.shape, isA<CircleBorder>());
       expect(tester.takeException(), isNull);
     });
     testWidgets('Home shell and raised navigation reflow at 320x700', (
@@ -1599,6 +1609,28 @@ void main() {
     expect(emailRect.bottom, lessThan(googleRect.top));
     expect(passwordHintRect.bottom, lessThan(createButtonRect.top));
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('auth field labels remain readable in dark mode', (tester) async {
+    final state = AppState(
+      api: ApiClient(baseUrl: 'http://example.test/api/v1'),
+    );
+    for (final mode in AuthMode.values) {
+      await tester.pumpWidget(_host(state, AuthScreen(mode: mode), dark: true));
+      await tester.pumpAndSettle();
+
+      final fieldTheme = Theme.of(
+        tester.element(find.byType(TextFormField).first),
+      );
+      expect(
+        fieldTheme.inputDecorationTheme.labelStyle?.color,
+        fieldTheme.colorScheme.onSurface.withValues(alpha: .72),
+      );
+      expect(
+        fieldTheme.inputDecorationTheme.hintStyle?.color,
+        fieldTheme.colorScheme.onSurface.withValues(alpha: .5),
+      );
+    }
   });
 
   testWidgets('onboarding character chooser customizes head top and bottom', (
@@ -1774,6 +1806,7 @@ void main() {
     );
     expect(find.byKey(const ValueKey('voice-onboarding-mic')), findsOneWidget);
     expect(find.text('Tap to speak'), findsOneWidget);
+    expect(find.text('Done speaking'), findsNothing);
     expect(find.text('Continue'), findsNothing);
     expect(find.text('Hear again'), findsNothing);
     expect(find.text('Stop listening'), findsNothing);
@@ -1840,10 +1873,28 @@ void main() {
     expect(homePuck.size, const Size.square(26));
     expect(navSurface.left, 7);
     expect(navSurface.width, 346);
+    expect(
+      tester.getRect(find.byType(TodayScreen)).bottom,
+      lessThanOrEqualTo(navSurface.top),
+    );
     final navBar = tester.widget<BottomAppBar>(
       find.byKey(const ValueKey('bottom-nav-surface')),
     );
-    expect(navBar.shape, isA<AutomaticNotchedShape>());
+    expect(navBar.shape, isA<NotchedShape>());
+    final notchPath = navBar.shape!.getOuterPath(
+      Offset.zero & navSurface.size,
+      Rect.fromCenter(
+        center: Offset(taraPuck.center.dx, 0),
+        width: taraPuck.width + 12,
+        height: taraPuck.height + 12,
+      ),
+    );
+    for (final distance in const [20.0, 28.0, 36.0, 44.0]) {
+      expect(
+        notchPath.contains(Offset(navSurface.width / 2 - distance, 4)),
+        notchPath.contains(Offset(navSurface.width / 2 + distance, 4)),
+      );
+    }
     expect(navBar.notchMargin, 6);
     expect(navBar.elevation, 8);
     expect(find.text('Home'), findsOneWidget);
