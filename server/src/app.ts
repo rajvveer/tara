@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import express from "express";
 import cors from "cors";
-import helmet from "helmet";
+import * as helmet from "helmet";
 import { rateLimit } from "express-rate-limit";
 import swaggerUi from "swagger-ui-express";
 import { config } from "./config.js";
@@ -19,7 +19,7 @@ app.use((request, response, next) => {
   response.setHeader("x-request-id", request.id);
   next();
 });
-app.use(helmet({ contentSecurityPolicy: config.NODE_ENV === "production" ? undefined : false }));
+app.use(helmet.default({ contentSecurityPolicy: config.NODE_ENV === "production" ? undefined : false }));
 app.use(cors({
   origin(origin, callback) {
     if (!origin || config.corsOrigins.includes("*") || config.corsOrigins.includes(origin)) callback(null, true);
