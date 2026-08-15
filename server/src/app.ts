@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { createRequire } from "node:module";
 import express from "express";
 import cors from "cors";
+import helmetModule from "helmet";
 import { rateLimit } from "express-rate-limit";
 import swaggerUi from "swagger-ui-express";
 import { config } from "./config.js";
@@ -10,7 +10,7 @@ import { ApiError, errorHandler, notFound } from "./errors.js";
 import { openapi } from "./openapi.js";
 import router from "./routes.js";
 
-const helmet = createRequire(import.meta.url)("helmet") as (options?: object) => express.RequestHandler;
+const helmet = helmetModule as unknown as (options?: object) => express.RequestHandler;
 
 export const app = express();
 
