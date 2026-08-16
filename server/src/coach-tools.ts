@@ -3,8 +3,9 @@ import { z } from "zod";
 import { ownedAction, syncMilestoneCompletion, transitionAction } from "./action-service.js";
 import { prisma } from "./db.js";
 import { ApiError } from "./errors.js";
-import { timezoneDayRange, timezoneWeekRange } from "./goal-progress.js";
+import { formatRelativeTimezoneDateTime, formatTimezoneDateTime, timezoneDayRange, timezoneWeekRange } from "./goal-progress.js";
 import { generateRoutineActions } from "./maintenance.js";
+import { queueGoalCreatedNotification } from "./push.js";
 
 const actionStatus = z.enum(["UPCOMING", "IN_PROGRESS", "COMPLETED", "MISSED", "SKIPPED"]);
 const day = z.enum(["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"]);
@@ -20,7 +21,7 @@ export const coachTools = [
       parameters: {
         type: "object",
         properties: {
-          scope: { type: "string", enum: ["TODAY", "THIS_WEEK", "ALL"], description: "Date range to show." },
+          scope: { type: "string", enum: ["TODAY", "TOMORROW", "THIS_WEEK", "ALL"], description: "Date range to show. Use TOMORROW for 'tomorrow' or 'kal' questions." },
           status: { type: "string", enum: ["OPEN", "UPCOMING", "IN_PROGRESS", "COMPLETED", "MISSED", "SKIPPED", "ALL"] },
         },
         additionalProperties: false,
@@ -32,6 +33,14 @@ export const coachTools = [
     function: {
       name: "list_goals",
       description: "Show the user's active, paused, or completed goals.",
+      parameters: { type: "object", properties: {}, additionalProperties: false },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_profile",
+      description: "Read the user's account profile and planning preferences. Use this for questions about their saved name, objective, preferred days or time, working frequency, constraints, progress style, or timezone.",
       parameters: { type: "object", properties: {}, additionalProperties: false },
     },
   },
@@ -84,7 +93,7 @@ export const coachTools = [
     type: "function",
     function: {
       name: "update_task",
-      description: "Complete, reopen, start, skip, miss, rename, reschedule, or change the duration of a task.",
+      description: "Complete, reopen, start, skip, miss, rename, reschedule, or change the duration of a task. A request to skip must use status SKIPPED; skipping is never deletion.",
       parameters: {
         type: "object",
         properties: {
@@ -104,7 +113,7 @@ export const coachTools = [
     type: "function",
     function: {
       name: "delete_task",
-      description: "Delete a task. First call with confirmedByUser=false so Tara asks for confirmation. Use true only after the user's latest message confirms deletion.",
+      description: "Permanently delete a task only when the user explicitly asks to delete it. Never use this for skip. First call with confirmedByUser=false so Tara asks for confirmation. Use true only after the user's latest message confirms deletion.",
       parameters: {
         type: "object",
         properties: {
@@ -189,6 +198,10 @@ function deletionConfirmed(message: string) {
   return /^(yes|yep|confirm|confirmed|do it|go ahead|delete it|remove it|yes[, ]+delete.*|haan|han|ha|हाँ|हां|जी हाँ|kar do|delete kar do|कर दो)[.! ]*$/iu.test(value);
 }
 
+function mutationRequested(message: string) {
+  return /\b(create|add|set|use|make|change|update|rename|move|reschedule|schedule|mark|complete|finish|finished|done|reopen|start|begin|skip|miss|pause|resume|delete|remove|save)\b|\b(bana|banao|jod|badal|hata|shuru|rok|kar do|kar diya)\b|(?:बना|जोड़|बदल|हटा|शुरू|रोक|पूरा|मिटा)/iu.test(message);
+}
+
 async function ownedGoal(userId: string, goalId: string) {
   const goal = await prisma.goal.findFirst({ where: { id: goalId, userId, deletedAt: null } });
   if (!goal) throw new ApiError(404, "GOAL_NOT_FOUND", "Goal not found.");
@@ -196,7 +209,7 @@ async function ownedGoal(userId: string, goalId: string) {
 }
 
 const listTasksSchema = z.object({
-  scope: z.enum(["TODAY", "THIS_WEEK", "ALL"]).default("ALL"),
+  scope: z.enum(["TODAY", "TOMORROW", "THIS_WEEK", "ALL"]).default("ALL"),
   status: z.enum(["OPEN", "UPCOMING", "IN_PROGRESS", "COMPLETED", "MISSED", "SKIPPED", "ALL"]).default("OPEN"),
 }).strict();
 
@@ -259,13 +272,22 @@ export async function executeCoachTool(
   name: string,
   rawArguments: string,
   latestMessage: string,
+  timeZone = "UTC",
 ): Promise<ToolResult> {
   const raw = argumentsOf(rawArguments);
+  if (["create_goal", "create_task", "update_task", "delete_task", "update_profile", "update_goal", "delete_goal"].includes(name)
+    && !mutationRequested(latestMessage)
+    && !(name.startsWith("delete_") && deletionConfirmed(latestMessage))) {
+    return { content: { error: "Ask the user to explicitly request the change before updating their data." }, changed: false };
+  }
   if (name === "list_tasks") {
     const input = listTasksSchema.parse(raw);
     const user = await prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { timezone: true, preferences: { select: { weekStartsOn: true } } } });
+    const todayRange = timezoneDayRange(user.timezone);
     const range = input.scope === "TODAY"
-      ? timezoneDayRange(user.timezone)
+      ? todayRange
+      : input.scope === "TOMORROW"
+        ? timezoneDayRange(user.timezone, todayRange.end)
       : input.scope === "THIS_WEEK"
         ? timezoneWeekRange(user.timezone, new Date(), user.preferences?.weekStartsOn ?? 1)
         : null;
@@ -283,9 +305,19 @@ export async function executeCoachTool(
       },
       select: { id: true, title: true, status: true, scheduledFor: true, preferredTime: true, estimatedMinutes: true, goal: { select: { id: true, title: true } } },
       orderBy: [{ scheduledFor: "asc" }, { createdAt: "asc" }],
-      take: 25,
+      take: 11,
     });
-    return { content: { tasks }, changed: false };
+    return {
+      content: {
+        tasks: tasks.slice(0, 10).map((task) => ({
+          ...task,
+          localScheduledFor: task.scheduledFor ? formatTimezoneDateTime(user.timezone, task.scheduledFor) : null,
+          scheduleLabel: task.scheduledFor ? formatRelativeTimezoneDateTime(user.timezone, task.scheduledFor) : null,
+        })),
+        hasMore: tasks.length > 10,
+      },
+      changed: false,
+    };
   }
 
   if (name === "list_goals") {
@@ -297,6 +329,15 @@ export async function executeCoachTool(
       take: 20,
     });
     return { content: { goals }, changed: false };
+  }
+
+  if (name === "get_profile") {
+    z.object({}).strict().parse(raw);
+    const profile = await prisma.user.findUniqueOrThrow({
+      where: { id: userId },
+      select: { name: true, mainObjective: true, timezone: true, preferences: true },
+    });
+    return { content: { profile }, changed: false };
   }
 
   if (name === "create_goal") {
@@ -347,6 +388,7 @@ export async function executeCoachTool(
       await transaction.analyticsEvent.create({
         data: { userId, name: "goal_created", properties: { goalId: created.id, category: created.category, source: "tara" } },
       });
+      await queueGoalCreatedNotification(transaction, userId, created);
       return created;
     });
     const generatedTaskCount = await generateRoutineActions(now, 21, goal.id);
@@ -362,6 +404,7 @@ export async function executeCoachTool(
   if (name === "create_task") {
     const input = createTaskSchema.parse(raw);
     await ownedGoal(userId, input.goalId);
+    const localScheduledFor = input.scheduledFor ? formatTimezoneDateTime(timeZone, input.scheduledFor) : null;
     const task = await prisma.action.create({
       data: {
         userId,
@@ -369,25 +412,50 @@ export async function executeCoachTool(
         title: input.title,
         scheduledFor: input.scheduledFor,
         dueDate: input.scheduledFor,
-        preferredTime: input.preferredTime,
+        preferredTime: input.preferredTime ?? localScheduledFor?.slice(-5),
         estimatedMinutes: input.estimatedMinutes,
       },
       select: { id: true, title: true, status: true, scheduledFor: true, preferredTime: true, estimatedMinutes: true },
     });
-    return { content: { task }, changed: true };
+    return {
+      content: {
+        task: {
+          ...task,
+          localScheduledFor,
+          scheduleLabel: task.scheduledFor ? formatRelativeTimezoneDateTime(timeZone, task.scheduledFor) : null,
+        },
+      },
+      changed: true,
+    };
   }
 
   if (name === "update_task") {
     const { taskId, status, ...fields } = updateTaskSchema.parse(raw);
     await ownedAction(userId, taskId);
+    const localScheduledFor = fields.scheduledFor instanceof Date ? formatTimezoneDateTime(timeZone, fields.scheduledFor) : null;
     const patch: Prisma.ActionUpdateInput = {
       ...fields,
       dueDate: fields.scheduledFor,
+      preferredTime: fields.preferredTime === undefined ? localScheduledFor?.slice(-5) : fields.preferredTime,
     };
     const task = status
       ? await transitionAction(userId, taskId, status, patch)
       : await prisma.action.update({ where: { id: taskId }, data: patch });
-    return { content: { task: { id: task.id, title: task.title, status: task.status, scheduledFor: task.scheduledFor } }, changed: true };
+    return {
+      content: {
+        task: {
+          id: task.id,
+          title: task.title,
+          status: task.status,
+          scheduledFor: task.scheduledFor,
+          preferredTime: task.preferredTime,
+          estimatedMinutes: task.estimatedMinutes,
+          localScheduledFor: task.scheduledFor ? formatTimezoneDateTime(timeZone, task.scheduledFor) : null,
+          scheduleLabel: task.scheduledFor ? formatRelativeTimezoneDateTime(timeZone, task.scheduledFor) : null,
+        },
+      },
+      changed: true,
+    };
   }
 
   if (name === "delete_task") {
@@ -405,7 +473,13 @@ export async function executeCoachTool(
 
   if (name === "update_profile") {
     const input = updateProfileSchema.parse(raw);
-    const { name: userName, mainObjective, ...preferences } = input;
+    const { name: userName, mainObjective, ...preferenceInput } = input;
+    const preferences = {
+      ...preferenceInput,
+      ...(preferenceInput.preferredDays?.length && preferenceInput.workingFrequency === undefined
+        ? { workingFrequency: preferenceInput.preferredDays.length }
+        : {}),
+    };
     await prisma.$transaction(async (transaction) => {
       if (userName !== undefined || mainObjective !== undefined) {
         await transaction.user.update({ where: { id: userId }, data: { name: userName, mainObjective } });

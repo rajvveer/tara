@@ -44,6 +44,7 @@ describe("AI goal plan", () => {
     const body = JSON.parse(String(request.body));
     expect(body.messages[1].content).toContain("Run my first 5K");
     expect(body.messages[1].content).toContain("Beginner runner");
+    expect(body.max_completion_tokens).toBe(400);
   });
 
   it("falls back to varied tasks when the provider response is unusable", async () => {

@@ -8,8 +8,10 @@ const mocks = vi.hoisted(() => ({
   analyticsCreate: vi.fn(),
   milestoneUpdateMany: vi.fn(),
   userFindUniqueOrThrow: vi.fn(),
+  userPreferenceUpsert: vi.fn(),
   goalCreate: vi.fn(),
   routineCreate: vi.fn(),
+  notificationCreate: vi.fn(),
   generateRoutineActions: vi.fn(),
   transaction: vi.fn(),
 }));
@@ -21,6 +23,8 @@ const transactionClient = {
   milestone: { updateMany: mocks.milestoneUpdateMany },
   goal: { create: mocks.goalCreate },
   routine: { create: mocks.routineCreate },
+  notification: { create: mocks.notificationCreate },
+  userPreference: { upsert: mocks.userPreferenceUpsert },
 };
 
 vi.mock("../src/db.js", () => ({
@@ -94,6 +98,18 @@ describe("Tara coach tools", () => {
     expect(mocks.transaction).not.toHaveBeenCalled();
   });
 
+  it("does not mutate a task for a read-only coaching request", async () => {
+    const result = await executeCoachTool(
+      "user-1",
+      "update_task",
+      JSON.stringify({ taskId: task.id, status: "IN_PROGRESS" }),
+      "I feel overwhelmed. Give me one small step.",
+    );
+
+    expect(result).toMatchObject({ changed: false, content: { error: expect.any(String) } });
+    expect(mocks.actionUpdate).not.toHaveBeenCalled();
+  });
+
   it("creates a goal and generates its task plan using saved schedule defaults", async () => {
     const goal = {
       id: "cmsuag6hkg4efyl5dvz8llocj",
@@ -127,5 +143,27 @@ describe("Tara coach tools", () => {
       data: expect.objectContaining({ goalId: goal.id, durationMinutes: 30, timesPerWeek: 3 }),
     }));
     expect(mocks.generateRoutineActions).toHaveBeenCalledWith(expect.any(Date), 21, goal.id);
+    expect(mocks.notificationCreate).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ dedupeKey: `goal:${goal.id}:created`, type: "SYSTEM" }),
+    }));
+  });
+
+  it("keeps working frequency aligned with newly selected days", async () => {
+    mocks.userFindUniqueOrThrow.mockResolvedValue({
+      name: "Answer Audit",
+      timezone: "Asia/Kolkata",
+      preferences: { preferredDays: ["TUESDAY", "THURSDAY"], preferredTime: "18:15", workingFrequency: 2 },
+    });
+
+    await executeCoachTool(
+      "user-1",
+      "update_profile",
+      JSON.stringify({ preferredDays: ["TUESDAY", "THURSDAY"], preferredTime: "18:15" }),
+      "Use Tuesday and Thursday at 6:15 PM",
+    );
+
+    expect(mocks.userPreferenceUpsert).toHaveBeenCalledWith(expect.objectContaining({
+      update: expect.objectContaining({ workingFrequency: 2 }),
+    }));
   });
 });

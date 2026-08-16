@@ -86,11 +86,11 @@ export async function generateGoalActionTitles(input: GoalActionPlanInput) {
         Authorization: `Bearer ${config.GROQ_API_KEY}`,
         "Content-Type": "application/json",
       },
-      signal: AbortSignal.timeout(20_000),
+      signal: AbortSignal.timeout(8_000),
       body: JSON.stringify({
         model: "openai/gpt-oss-120b",
         temperature: 0.6,
-        max_completion_tokens: 1_800,
+        max_completion_tokens: Math.min(1_800, Math.max(400, input.dates.length * 80)),
         reasoning_effort: "low",
         response_format: { type: "json_object" },
         messages: [{
