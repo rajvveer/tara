@@ -19,6 +19,7 @@ import { sendPasswordResetEmail } from "./email.js";
 import { startVoiceOnboarding, voiceOnboardingTurn } from "./sarvam.js";
 import { generateRoutineActions } from "./maintenance.js";
 import { ownedAction, syncMilestoneCompletion, transitionAction } from "./action-service.js";
+import { queueGoalCreatedNotification } from "./push.js";
 
 const router = Router();
 
@@ -295,7 +296,10 @@ router.post("/users/me/onboarding", validate(schemas.onboardingSchema), async (r
       weeklyTarget: input.weeklyTarget,
       routines: { create: { userId: request.userId!, name: `${input.title} rhythm`, frequency: input.frequency, days: input.preferredDays, preferredTime: input.preferredTime, timesPerWeek: input.weeklyTarget, durationMinutes: 30 } },
     } });
-    if (!existing) await transaction.analyticsEvent.create({ data: { userId: request.userId!, name: "goal_created", properties: { goalId: goal.id, category: goal.category, source: "onboarding" } } });
+    if (!existing) {
+      await transaction.analyticsEvent.create({ data: { userId: request.userId!, name: "goal_created", properties: { goalId: goal.id, category: goal.category, source: "onboarding" } } });
+      await queueGoalCreatedNotification(transaction, request.userId!, goal);
+    }
     const detailed = await transaction.goal.findUniqueOrThrow({ where: { id: goal.id }, include: { milestones: true, actions: true, routines: { where: { isActive: true } }, progressRecords: { include: { action: { select: { id: true, title: true } } } } } });
     return { user, preferences, goal: { ...detailed, progress: calculateGoalProgress(detailed, detailed.actions) } };
   });
@@ -321,7 +325,7 @@ router.get("/goals", validate(schemas.goalListQuery, "query"), async (request, r
 });
 
 router.post("/goals", validate(schemas.createGoalSchema), async (request, response) => {
-  const { plan, ...goalInput } = request.body;
+  const { plan, generatePlan, ...goalInput } = request.body;
   const goalId = await prisma.$transaction(async (transaction) => {
     const created = await transaction.goal.create({ data: { ...goalInput, userId: request.userId! } });
 
@@ -352,9 +356,10 @@ router.post("/goals", validate(schemas.createGoalSchema), async (request, respon
     }
 
     await transaction.analyticsEvent.create({ data: { userId: request.userId!, name: "goal_created", properties: { goalId: created.id, category: created.category } } });
+    await queueGoalCreatedNotification(transaction, request.userId!, created);
     return created.id;
   });
-  await generateRoutineActions(new Date(), 21, goalId);
+  if (generatePlan) await generateRoutineActions(new Date(), 7, goalId);
   const goal = await prisma.goal.findUniqueOrThrow({
     where: { id: goalId },
     include: {
@@ -389,6 +394,15 @@ router.patch("/goals/:id", validate(schemas.idParams, "params"), validate(schema
   if ((request.body.category ?? current.category) === "CUSTOM" && !(request.body.customCategory ?? current.customCategory)) {
     throw new ApiError(422, "CUSTOM_CATEGORY_REQUIRED", "Custom category is required.");
   }
+  const metricUnit = request.body.metricUnit === undefined ? current.metricUnit : request.body.metricUnit;
+  const metricTarget = request.body.metricTarget === undefined ? current.metricTarget : request.body.metricTarget;
+  const metricCurrent = request.body.metricCurrent === undefined ? current.metricCurrent : request.body.metricCurrent;
+  if ((metricUnit == null) !== (metricTarget == null)) {
+    throw new ApiError(422, "METRIC_INCOMPLETE", "Metric unit and target must be supplied together.");
+  }
+  if (metricTarget == null && metricCurrent > 0) {
+    throw new ApiError(422, "METRIC_TARGET_REQUIRED", "Metric progress requires a metric target.");
+  }
   const scheduleChanged = request.body.frequency !== undefined
     || request.body.preferredDays !== undefined
     || request.body.preferredTime !== undefined
@@ -412,6 +426,37 @@ if (scheduleChanged) {
   });
   const actions = await prisma.action.findMany({ where: { goalId: goal.id, userId: request.userId!, deletedAt: null }, select: { status: true, scheduledFor: true, dueDate: true } });
   response.json({ data: { ...goal, progress: calculateGoalProgress(goal, actions) } });
+});
+
+router.post("/goals/:goalId/progress", validate(schemas.goalIdParams, "params"), validate(schemas.logGoalProgressSchema), async (request, response) => {
+  const current = await ownedGoal(request.userId!, request.params.goalId as string);
+  if (!current.metricUnit || !current.metricTarget) {
+    throw new ApiError(422, "METRIC_NOT_CONFIGURED", "Set a metric unit and target before logging progress.");
+  }
+  const { goal, record } = await prisma.$transaction(async (transaction) => {
+    const updated = await transaction.goal.update({
+      where: { id: current.id },
+      data: { metricCurrent: { increment: request.body.value } },
+    });
+    const created = await transaction.progressRecord.create({
+      data: {
+        userId: request.userId!,
+        goalId: current.id,
+        status: "IN_PROGRESS",
+        value: request.body.value,
+        note: request.body.note,
+      },
+    });
+    await transaction.analyticsEvent.create({
+      data: { userId: request.userId!, name: "goal_metric_logged", properties: { goalId: current.id, value: request.body.value } },
+    });
+    return { goal: updated, record: created };
+  });
+  const actions = await prisma.action.findMany({
+    where: { goalId: goal.id, userId: request.userId!, deletedAt: null },
+    select: { status: true, scheduledFor: true, dueDate: true },
+  });
+  response.status(201).json({ data: { goal: { ...goal, progress: calculateGoalProgress(goal, actions) }, record } });
 });
 
 router.delete("/goals/:id", validate(schemas.idParams, "params"), async (request, response) => {

@@ -52,11 +52,11 @@ export const openapi = {
       },
       Goal: {
         type: "object",
-        properties: { id: { type: "string" }, title: { type: "string" }, description: { type: ["string", "null"] }, whyItMatters: { type: ["string", "null"] }, category: { type: "string" }, priority: { type: "string" }, status: { type: "string" }, startDate: { type: "string", format: "date-time" }, targetDate: { type: ["string", "null"], format: "date-time" }, weeklyTarget: { type: "integer" } },
+        properties: { id: { type: "string" }, title: { type: "string" }, description: { type: ["string", "null"] }, whyItMatters: { type: ["string", "null"] }, category: { type: "string" }, priority: { type: "string" }, status: { type: "string" }, startDate: { type: "string", format: "date-time" }, targetDate: { type: ["string", "null"], format: "date-time" }, weeklyTarget: { type: "integer" }, metricUnit: { type: ["string", "null"] }, metricTarget: { type: ["number", "null"] }, metricCurrent: { type: "number" }, remindersEnabled: { type: "boolean" } },
       },
       Action: {
         type: "object",
-        properties: { id: { type: "string" }, goalId: { type: "string" }, milestoneId: { type: ["string", "null"] }, title: { type: "string" }, status: { type: "string" }, scheduledFor: { type: ["string", "null"], format: "date-time" }, dueDate: { type: ["string", "null"], format: "date-time" }, estimatedMinutes: { type: ["integer", "null"] } },
+        properties: { id: { type: "string" }, goalId: { type: "string" }, milestoneId: { type: ["string", "null"] }, title: { type: "string" }, status: { type: "string" }, scheduledFor: { type: ["string", "null"], format: "date-time" }, dueDate: { type: ["string", "null"], format: "date-time" }, estimatedMinutes: { type: ["integer", "null"] }, reminderEnabled: { type: "boolean" } },
       },
       ProgressRecord: {
         type: "object",
@@ -83,6 +83,7 @@ export const openapi = {
     "/voice/onboarding/turn": { post: { tags: ["Voice"], summary: "Transcribe one answer, update the proposed goal, and speak the next question", description: "Audio is processed for this response and is not persisted by GoalSpring.", responses: { "200": { description: "Transcript, same-language reply/audio, proposed answers, and completion state" }, "413": { description: "Audio payload is too large" }, "422": { description: "Invalid or unsupported audio" }, "502": { description: "Voice provider unavailable" } } } },
     "/goals": { get: { tags: ["Goals"], summary: "List goals", responses: { "200": { description: "Paginated goals with calculated progress" } } }, post: { tags: ["Goals"], summary: "Create goal", responses: { "201": { description: "Created goal" } } } },
     "/goals/{id}": { get: { tags: ["Goals"], summary: "Get full goal detail", parameters: [{ $ref: "#/components/parameters/id" }], responses: { "200": { description: "Goal with milestones, actions, routines, and history" } } }, patch: { tags: ["Goals"], summary: "Update, pause, resume, or complete goal", parameters: [{ $ref: "#/components/parameters/id" }], responses: { "200": { description: "Updated" } } }, delete: { tags: ["Goals"], summary: "Archive goal", parameters: [{ $ref: "#/components/parameters/id" }], responses: { "204": { description: "Archived" } } } },
+    "/goals/{goalId}/progress": { post: { tags: ["Progress"], summary: "Log numeric progress for a goal", responses: { "201": { description: "Metric total and progress history updated" } } } },
     "/goals/{goalId}/milestones": { get: { tags: ["Milestones"], summary: "List goal milestones", responses: { "200": { description: "Milestones" } } }, post: { tags: ["Milestones"], summary: "Create milestone", responses: { "201": { description: "Created" } } } },
     "/milestones/{id}": { patch: { tags: ["Milestones"], summary: "Update milestone", responses: { "200": { description: "Updated" } } }, delete: { tags: ["Milestones"], summary: "Remove milestone", responses: { "204": { description: "Removed" } } } },
     "/actions": { get: { tags: ["Actions"], summary: "List/filter actions", responses: { "200": { description: "Paginated actions" } } }, post: { tags: ["Actions"], summary: "Create action", responses: { "201": { description: "Created" } } } },

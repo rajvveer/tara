@@ -145,6 +145,21 @@ run("API journey (PostgreSQL)", () => {
     expect(counts).toEqual([goalsBefore, 0, 0, 0]);
   });
 
+  it("creates a goal without generated actions when AI planning is off", async () => {
+    const goal = await request(app).post("/api/v1/goals").set("Authorization", `Bearer ${token}`).send({
+      title: "Keep this goal manual",
+      category: "PERSONAL",
+      startDate: "2026-08-12T00:00:00.000Z",
+      frequency: "WEEKLY",
+      weeklyTarget: 1,
+      preferredDays: ["MONDAY"],
+      generatePlan: false,
+      plan: { routine: { name: "Manual rhythm", durationMinutes: 20 } },
+    }).expect(201);
+
+    expect(goal.body.data.actions).toEqual([]);
+  });
+
   it("creates a goal and full plan atomically", async () => {
     const plannedMilestoneId = `c${randomUUID().replaceAll("-", "")}`;
     const goal = await request(app).post("/api/v1/goals").set("Authorization", `Bearer ${token}`).send({
@@ -155,10 +170,13 @@ run("API journey (PostgreSQL)", () => {
       frequency: "WEEKLY",
       weeklyTarget: 3,
       preferredDays: ["MONDAY", "WEDNESDAY", "FRIDAY"],
+      metricUnit: "hours",
+      metricTarget: 100,
+      remindersEnabled: false,
       plan: {
         milestones: [{ id: plannedMilestoneId, title: "Core flow works", targetDate: "2026-08-26T00:00:00.000Z" }],
         actions: [
-          { title: "Complete this", milestoneId: plannedMilestoneId, scheduledFor: "2026-08-12T08:00:00.000Z", estimatedMinutes: 25 },
+          { title: "Complete this", milestoneId: plannedMilestoneId, scheduledFor: "2026-08-12T08:00:00.000Z", estimatedMinutes: 25, reminderEnabled: false },
           { title: "Skip this", scheduledFor: "2026-08-12T09:00:00.000Z", estimatedMinutes: 25 },
         ],
         routine: { name: "Keep this routine", durationMinutes: 25 },
@@ -171,6 +189,10 @@ run("API journey (PostgreSQL)", () => {
     expect(goal.body.data).toMatchObject({
       title: "Ship the integration journey",
       targetDate: null,
+      metricUnit: "hours",
+      metricTarget: 100,
+      metricCurrent: 0,
+      remindersEnabled: false,
       milestones: [expect.objectContaining({ title: "Core flow works" })],
       routines: [expect.objectContaining({ name: "Keep this routine", frequency: "WEEKLY", days: ["MONDAY", "WEDNESDAY", "FRIDAY"], timesPerWeek: 3, durationMinutes: 25 })],
       progressRecords: [],
@@ -179,6 +201,30 @@ run("API journey (PostgreSQL)", () => {
     expect(new Set(goal.body.data.actions.map((action: { title: string }) => action.title)).size).toBe(goal.body.data.actions.length);
     expect(goal.body.data.actions.some((action: { title: string }) => action.title.startsWith("Continue "))).toBe(false);
     expect(goal.body.data.actions.find((action: { id: string }) => action.id === actionId).milestoneId).toBe(milestoneId);
+    expect(goal.body.data.actions.find((action: { id: string }) => action.id === actionId).reminderEnabled).toBe(false);
+    expect(await prisma.notification.findUnique({ where: { dedupeKey: `goal:${goalId}:created` } })).toMatchObject({
+      userId: firstUserId,
+      type: "SYSTEM",
+      title: "Goal created",
+    });
+  });
+
+  it("logs custom numeric progress with history", async () => {
+    const logged = await request(app)
+      .post(`/api/v1/goals/${goalId}/progress`)
+      .set("Authorization", `Bearer ${token}`)
+      .send({ value: 12.5, note: "Focused work" })
+      .expect(201);
+
+    expect(logged.body.data.goal.metricCurrent).toBe(12.5);
+    expect(logged.body.data.goal.progress.progress).toBe(13);
+    expect(logged.body.data.record).toMatchObject({
+      goalId,
+      actionId: null,
+      status: "IN_PROGRESS",
+      value: 12.5,
+      note: "Focused work",
+    });
   });
 
   it("generates recurring actions and automatically marks overdue work missed", async () => {

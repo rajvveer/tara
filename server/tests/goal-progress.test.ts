@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { calculateGoalProgress, timezoneDayRange, timezoneMonthRange, timezoneWeekRange } from "../src/goal-progress.js";
+import { calculateGoalProgress, formatRelativeTimezoneDateTime, formatTimezoneDateTime, timezoneDayRange, timezoneMonthRange, timezoneWeekRange } from "../src/goal-progress.js";
 
 const now = new Date("2026-08-12T12:00:00.000Z");
 const baseGoal = {
@@ -42,6 +42,16 @@ describe("goal progress", () => {
     expect(ambitious.expectedProgress).toBeGreaterThan(gentle.expectedProgress);
   });
 
+  it("uses a configured numeric target as the goal completion source", () => {
+    const metricGoal = { ...baseGoal, metricTarget: 100, metricCurrent: 25 };
+    const result = calculateGoalProgress(metricGoal, [
+      { status: "COMPLETED" as const, scheduledFor: new Date("2026-08-04T10:00:00.000Z") },
+      { status: "COMPLETED" as const, scheduledFor: new Date("2026-08-08T10:00:00.000Z") },
+    ], now);
+    expect(result.progress).toBe(25);
+    expect(calculateGoalProgress({ ...metricGoal, metricCurrent: 100 }, [], now).status).toBe("COMPLETED");
+  });
+
   it("finds local day boundaries across half-hour timezones", () => {
     const range = timezoneDayRange("Asia/Kolkata", new Date("2026-08-12T20:00:00.000Z"));
     expect(range.start.toISOString()).toBe("2026-08-12T18:30:00.000Z");
@@ -53,6 +63,15 @@ describe("goal progress", () => {
     const negative = timezoneDayRange("UTC-07:00", new Date("2026-08-12T06:30:00.000Z"));
     expect([positive.start.toISOString(), positive.end.toISOString()]).toEqual(["2026-08-12T18:30:00.000Z", "2026-08-13T18:30:00.000Z"]);
     expect([negative.start.toISOString(), negative.end.toISOString()]).toEqual(["2026-08-11T07:00:00.000Z", "2026-08-12T07:00:00.000Z"]);
+  });
+
+  it("formats task timestamps as local wall-clock values", () => {
+    const instant = new Date("2026-08-17T02:30:00.000Z");
+    expect(formatTimezoneDateTime("Asia/Kolkata", instant)).toBe("2026-08-17 08:00");
+    expect(formatTimezoneDateTime("UTC+05:30", instant)).toBe("2026-08-17 08:00");
+    expect(formatTimezoneDateTime("UTC-07:00", instant)).toBe("2026-08-16 19:30");
+    expect(formatRelativeTimezoneDateTime("Asia/Kolkata", instant, new Date("2026-08-16T12:00:00.000Z"))).toBe("tomorrow at 8:00 AM");
+    expect(formatRelativeTimezoneDateTime("UTC-07:00", instant, new Date("2026-08-17T08:00:00.000Z"))).toBe("yesterday at 7:30 PM");
   });
 
   it("uses IST calendar boundaries for weekly and monthly progress", () => {

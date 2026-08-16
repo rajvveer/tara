@@ -127,6 +127,10 @@ model Goal {
   preferredDays   String[]
   preferredTime   String?
   weeklyTarget    Int              @default(3)
+  metricUnit      String?
+  metricTarget    Float?
+  metricCurrent   Float            @default(0)
+  remindersEnabled Boolean         @default(true)
   color           String?
   icon            String?
   completedAt     DateTime?
@@ -180,6 +184,7 @@ model Action {
   estimatedMinutes Int?
   difficulty       Int              @default(2)
   frequency        Frequency        @default(ONCE)
+  reminderEnabled  Boolean          @default(true)
   completedAt      DateTime?
   skippedAt        DateTime?
   deletedAt        DateTime?

@@ -6,6 +6,8 @@ type GoalInput = {
   targetDate: Date | null;
   frequency: Frequency;
   weeklyTarget: number;
+  metricTarget?: number | null;
+  metricCurrent?: number | null;
 };
 
 type ActionInput = { status: ActionStatus; scheduledFor?: Date | null; dueDate?: Date | null };
@@ -35,7 +37,10 @@ export function calculateGoalProgress(goal: GoalInput, actions: ActionInput[], n
   const missed = actions.filter((action) => action.status === "MISSED").length;
   const skipped = actions.filter((action) => action.status === "SKIPPED").length;
   const total = actions.length;
-  const progress = total === 0 ? 0 : completed / total;
+  const metricProgress = goal.metricTarget && goal.metricTarget > 0
+    ? clamp((goal.metricCurrent ?? 0) / goal.metricTarget)
+    : null;
+  const progress = metricProgress ?? (total === 0 ? 0 : completed / total);
 
   const dueActions = actions.filter((action) => {
     const plannedAt = action.scheduledFor ?? action.dueDate;
@@ -51,7 +56,7 @@ export function calculateGoalProgress(goal: GoalInput, actions: ActionInput[], n
   const expectedProgress = Math.max(timeframeExpected, cadenceProgress);
 
   let status: GoalProgressStatus;
-  if (goal.status === "COMPLETED" || (total > 0 && completed === total)) status = "COMPLETED";
+  if (goal.status === "COMPLETED" || metricProgress === 1 || (metricProgress === null && total > 0 && completed === total)) status = "COMPLETED";
   else if (progress >= expectedProgress + 0.1 && adherence >= 0.75) status = "AHEAD";
   else if (progress + 0.15 < expectedProgress || (dueActions.length > 0 && adherence < 0.5)) status = "BEHIND";
   else if (progress + 0.05 < expectedProgress || (dueActions.length > 0 && adherence < 0.7)) status = "NEEDS_ATTENTION";
@@ -126,6 +131,49 @@ function calendarMidnight(calendar: LocalCalendar, year: number, month: number, 
 export function timezoneDateParts(timeZone: string, now = new Date()) {
   const { year, month, day } = localCalendar(timeZone, now);
   return { year, month, day };
+}
+
+export function formatTimezoneDateTime(timeZone: string, date: Date) {
+  const calendar = localCalendar(timeZone, date);
+  if (calendar.offsetMinutes !== null) {
+    const local = new Date(date.getTime() + calendar.offsetMinutes * 60_000);
+    return `${local.getUTCFullYear()}-${String(local.getUTCMonth() + 1).padStart(2, "0")}-${String(local.getUTCDate()).padStart(2, "0")} ${String(local.getUTCHours()).padStart(2, "0")}:${String(local.getUTCMinutes()).padStart(2, "0")}`;
+  }
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: calendar.timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(date);
+  const value = (type: string) => parts.find((part) => part.type === type)?.value ?? "00";
+  return `${value("year")}-${value("month")}-${value("day")} ${value("hour")}:${value("minute")}`;
+}
+
+export function formatRelativeTimezoneDateTime(timeZone: string, date: Date, now = new Date()) {
+  const match = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})$/.exec(formatTimezoneDateTime(timeZone, date));
+  if (!match) throw new Error("Could not format local task time.");
+  const year = Number(match[1]!);
+  const month = Number(match[2]!);
+  const day = Number(match[3]!);
+  const hour = Number(match[4]!);
+  const minute = Number(match[5]!);
+  const current = timezoneDateParts(timeZone, now);
+  const dayDifference = Math.round(
+    (Date.UTC(year, month - 1, day) - Date.UTC(current.year, current.month - 1, current.day)) / 86_400_000,
+  );
+  const relativeDay = dayDifference === -1 ? "yesterday" : dayDifference === 0 ? "today" : dayDifference === 1 ? "tomorrow" : null;
+  const calendarDay = relativeDay ?? new Intl.DateTimeFormat("en-US", {
+    timeZone: "UTC",
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+    ...(year === current.year ? {} : { year: "numeric" }),
+  }).format(new Date(Date.UTC(year, month - 1, day)));
+  const clock = `${hour % 12 || 12}:${String(minute).padStart(2, "0")} ${hour < 12 ? "AM" : "PM"}`;
+  return `${calendarDay} at ${clock}`;
 }
 
 export function zonedDateTime(timeZone: string, year: number, month: number, day: number, hour = 0, minute = 0) {

@@ -108,7 +108,7 @@ export const voiceAnswersSchema = z.object({
   objective: z.string().trim().min(3).max(120).nullable().optional(),
   targetDate: z.string().date().nullable().optional(),
   preferredDays: z.array(voiceDay).min(1).max(7).nullable().optional(),
-  preferredTime: z.enum(["Morning", "Afternoon", "Evening", "Flexible"]).nullable().optional(),
+  preferredTime: z.union([time, z.literal("Flexible")]).nullable().optional(),
   workingFrequency: z.number().int().min(1).max(7).nullable().optional(),
   progressStyle: z.enum(["Gentle", "Balanced", "Detailed"]).nullable().optional(),
   constraints: z.string().trim().max(1_000).nullable().optional(),
@@ -139,6 +139,10 @@ const goalFields = z.object({
   preferredDays: z.array(day).max(7).default([]),
   preferredTime: time.nullable().optional(),
   weeklyTarget: z.number().int().min(1).max(21).default(3),
+  metricUnit: z.string().trim().min(1).max(30).nullable().optional(),
+  metricTarget: z.number().positive().max(1_000_000_000_000).nullable().optional(),
+  metricCurrent: z.number().min(0).max(1_000_000_000_000).default(0),
+  remindersEnabled: z.boolean().default(true),
   color: z.string().regex(/^#[0-9a-fA-F]{6}$/).nullable().optional(),
   icon: z.string().trim().max(40).nullable().optional(),
 });
@@ -174,6 +178,7 @@ const actionFields = z.object({
   estimatedMinutes: z.number().int().min(1).max(1_440).nullable().optional(),
   difficulty: z.number().int().min(1).max(5).default(2),
   frequency: frequency.default("ONCE"),
+  reminderEnabled: z.boolean().default(true),
 });
 export const createActionSchema = actionFields.extend({ id: z.string().cuid().optional() });
 export const updateActionSchema = actionFields.omit({ goalId: true }).partial().strict();
@@ -211,14 +216,25 @@ const createPlanSchema = z.object({
   });
 });
 
-export const createGoalSchema = goalFields.extend({ id: z.string().cuid().optional(), plan: createPlanSchema.optional() }).superRefine((value, context) => {
+export const createGoalSchema = goalFields.extend({ id: z.string().cuid().optional(), generatePlan: z.boolean().default(true), plan: createPlanSchema.optional() }).superRefine((value, context) => {
   if (value.category === "CUSTOM" && !value.customCategory) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["customCategory"], message: "Custom category is required." });
   }
   if (value.targetDate && value.targetDate < value.startDate) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["targetDate"], message: "Target date must be on or after the start date." });
   }
+  if ((value.metricUnit == null) !== (value.metricTarget == null)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["metricTarget"], message: "Metric unit and target must be supplied together." });
+  }
+  if (value.metricTarget == null && value.metricCurrent > 0) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["metricCurrent"], message: "Metric progress requires a metric target." });
+  }
 });
+
+export const logGoalProgressSchema = z.object({
+  value: z.number().positive().max(1_000_000_000_000),
+  note: z.string().trim().max(500).nullable().optional(),
+}).strict();
 
 const reflectionFields = z.object({
   periodStart: date,
