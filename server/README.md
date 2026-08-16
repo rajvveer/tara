@@ -49,6 +49,8 @@ Demo seed credentials: `demo@onward.app` / `OnwardDemo123!`
 | `APP_URL` | Public HTTPS app URL used in password-reset links |
 | `RESEND_API_KEY`, `RESET_FROM_EMAIL` | Resend credentials for production password-reset delivery |
 | `FIREBASE_SERVICE_ACCOUNT_JSON` | Firebase service-account JSON used to deliver queued push notifications through FCM |
+| `FIREBASE_SERVICE_ACCOUNT_FILE` | Local alternative path to the Firebase service-account JSON |
+| `CRON_SECRET` | Random secret used to authorize the Vercel maintenance cron endpoint |
 | `SARVAM_API_KEY` | Server-only Sarvam credential for Saaras v3 STT and Bulbul v3 TTS |
 | `GROQ_API_KEY` | Server-only Groq credential for GPT-OSS 120B goal extraction and conversation turns |
 | `PORT`, `NODE_ENV` | HTTP port and runtime mode |
@@ -131,7 +133,7 @@ Production password resets are sent through Resend. The secure token is exposed 
 
 The backend records low-sensitivity lifecycle events: account/goal/milestone/action creation, goal edits/completion, action status changes, and reflection submission. Event properties contain entity IDs and broad categories/statuses, never passwords, reflection text, or auth tokens.
 
-Notification preferences, quiet hours, scheduled notification records, unread state, reminder lead time, and device tokens live in PostgreSQL. The in-process maintenance worker runs every five minutes: it creates routine actions, marks overdue actions missed, queues reminders/summaries/reflections, and sends due records through Firebase Cloud Messaging. Run only one API scheduler instance, or move `runMaintenance` to a dedicated worker when horizontally scaling.
+Notification preferences, quiet hours, scheduled notification records, unread state, reminder lead time, and device tokens live in PostgreSQL. Goal creation queues a confirmation; the maintenance worker queues before/due task reminders, an 8 PM local-time unfinished-task summary, milestone reminders, progress summaries, and weekly reflections, then sends due records through Firebase Cloud Messaging. The Node server runs it every five minutes; Vercel invokes the protected `/api/maintenance` cron route on the same schedule when `CRON_SECRET` is configured. Run only one scheduler instance when horizontally scaling.
 
 ## Tests
 

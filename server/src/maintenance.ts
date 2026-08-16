@@ -1,7 +1,7 @@
 import type { Frequency } from "@prisma/client";
 import { prisma } from "./db.js";
 import { generateGoalActionTitles } from "./goal-plan.js";
-import { timezoneDateParts, zonedDateTime } from "./goal-progress.js";
+import { timezoneDateParts, timezoneDayRange, zonedDateTime } from "./goal-progress.js";
 import { dispatchDueNotifications } from "./push.js";
 
 type CalendarDate = { year: number; month: number; day: number };
@@ -45,6 +45,13 @@ export function shouldScheduleRoutine(rule: RoutineRule, date: CalendarDate, tim
     return date.day === Math.min(created.day, lastDay);
   }
   return true;
+}
+
+export function remainingTaskCount(timeZone: string, now: Date, dueDates: Array<Date | null>) {
+  const today = timezoneDateParts(timeZone, now);
+  if (now < zonedDateTime(timeZone, today.year, today.month, today.day, 20)) return 0;
+  const { start, end } = timezoneDayRange(timeZone, now);
+  return dueDates.filter((due) => due && due >= start && due < end).length;
 }
 
 function parseTime(value: string | null) {
@@ -168,26 +175,56 @@ export async function enqueueNotifications(now = new Date()) {
     where: { notificationPrefs: { is: { pushEnabled: true } } },
     include: {
       notificationPrefs: true,
-      actions: { where: { deletedAt: null, status: { in: ["UPCOMING", "IN_PROGRESS"] }, scheduledFor: { lte: horizon } }, include: { goal: { select: { title: true } } } },
-      milestones: { where: { deletedAt: null, status: { not: "COMPLETED" }, targetDate: { gte: now, lte: horizon } }, include: { goal: { select: { title: true } } } },
+      actions: { where: { deletedAt: null, status: { in: ["UPCOMING", "IN_PROGRESS", "MISSED"] }, OR: [{ scheduledFor: { lte: horizon } }, { scheduledFor: null, dueDate: { lte: horizon } }] }, include: { goal: { select: { title: true, remindersEnabled: true } } } },
+      milestones: { where: { deletedAt: null, status: { not: "COMPLETED" }, targetDate: { gte: now, lte: horizon } }, include: { goal: { select: { title: true, remindersEnabled: true } } } },
     },
   });
   const rows = [];
   for (const user of users) {
     const prefs = user.notificationPrefs!;
     for (const action of user.actions) {
+      if (action.status === "MISSED") continue;
+      if (!action.reminderEnabled || !action.goal.remindersEnabled) continue;
       const due = action.scheduledFor ?? action.dueDate;
       if (!due) continue;
       if (prefs.actionReminders) rows.push({ userId: user.id, type: "ACTION_REMINDER" as const, title: "A small step is coming up", body: `${action.title} · ${action.goal.title}`, scheduledAt: outsideQuietHours(user.timezone, new Date(due.getTime() - prefs.reminderMinutesBefore * 60_000), prefs.quietHoursStart, prefs.quietHoursEnd), dedupeKey: `action:${action.id}:reminder`, data: { actionId: action.id, goalId: action.goalId } });
       if (prefs.dueActionReminders) rows.push({ userId: user.id, type: "DUE_ACTION" as const, title: "Ready when you are", body: action.title, scheduledAt: outsideQuietHours(user.timezone, due, prefs.quietHoursStart, prefs.quietHoursEnd), dedupeKey: `action:${action.id}:due`, data: { actionId: action.id, goalId: action.goalId } });
     }
-    if (prefs.milestoneReminders) for (const milestone of user.milestones) rows.push({ userId: user.id, type: "MILESTONE" as const, title: "Milestone approaching", body: `${milestone.title} · ${milestone.goal.title}`, scheduledAt: outsideQuietHours(user.timezone, new Date(milestone.targetDate!.getTime() - 86_400_000), prefs.quietHoursStart, prefs.quietHoursEnd), dedupeKey: `milestone:${milestone.id}:${milestone.targetDate!.toISOString()}`, data: { milestoneId: milestone.id, goalId: milestone.goalId } });
+    if (prefs.milestoneReminders) for (const milestone of user.milestones) {
+      if (!milestone.goal.remindersEnabled) continue;
+      rows.push({ userId: user.id, type: "MILESTONE" as const, title: "Milestone approaching", body: `${milestone.title} · ${milestone.goal.title}`, scheduledAt: outsideQuietHours(user.timezone, new Date(milestone.targetDate!.getTime() - 86_400_000), prefs.quietHoursStart, prefs.quietHoursEnd), dedupeKey: `milestone:${milestone.id}:${milestone.targetDate!.toISOString()}`, data: { milestoneId: milestone.id, goalId: milestone.goalId } });
+    }
+    const today = timezoneDateParts(user.timezone, now);
+    if (prefs.dueActionReminders) {
+      const remaining = remainingTaskCount(
+        user.timezone,
+        now,
+        user.actions
+          .filter((action) => action.reminderEnabled && action.goal.remindersEnabled)
+          .map((action) => action.scheduledFor ?? action.dueDate),
+      );
+      if (remaining) rows.push({
+        userId: user.id,
+        type: "SYSTEM" as const,
+        title: remaining === 1 ? "One task is still open" : `${remaining} tasks are still open`,
+        body: "Take one small step now, or reschedule what no longer fits today.",
+        scheduledAt: outsideQuietHours(user.timezone, now, prefs.quietHoursStart, prefs.quietHoursEnd),
+        dedupeKey: `remaining:${user.id}:${dateKey(today)}`,
+        data: { remainingCount: remaining },
+      });
+    }
     let sunday = timezoneDateParts(user.timezone, now);
     while (new Date(Date.UTC(sunday.year, sunday.month - 1, sunday.day)).getUTCDay() !== 0) sunday = addDays(sunday, 1);
     if (prefs.progressSummaries) rows.push({ userId: user.id, type: "PROGRESS_SUMMARY" as const, title: "Your week in view", body: "See what moved and what may need a smaller next step.", scheduledAt: outsideQuietHours(user.timezone, zonedDateTime(user.timezone, sunday.year, sunday.month, sunday.day, 18), prefs.quietHoursStart, prefs.quietHoursEnd), dedupeKey: `summary:${user.id}:${dateKey(sunday)}` });
     if (prefs.weeklyReflection) rows.push({ userId: user.id, type: "WEEKLY_REFLECTION" as const, title: "A week is information", body: "Take a minute to notice what helped and choose next week’s focus.", scheduledAt: outsideQuietHours(user.timezone, zonedDateTime(user.timezone, sunday.year, sunday.month, sunday.day, 19), prefs.quietHoursStart, prefs.quietHoursEnd), dedupeKey: `reflection:${user.id}:${dateKey(sunday)}` });
   }
-  return rows.length ? (await prisma.notification.createMany({ data: rows, skipDuplicates: true })).count : 0;
+  if (!rows.length) return 0;
+  await prisma.$transaction(rows.map((row) => prisma.notification.upsert({
+    where: { dedupeKey: row.dedupeKey },
+    create: row,
+    update: { title: row.title, body: row.body, data: row.data, scheduledAt: row.scheduledAt },
+  })));
+  return rows.length;
 }
 
 export async function runMaintenance(now = new Date()) {

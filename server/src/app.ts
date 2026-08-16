@@ -11,6 +11,7 @@ import { ApiError, errorHandler, notFound } from "./errors.js";
 import { openapi } from "./openapi.js";
 import { attachRealtime } from "./realtime.js";
 import router from "./routes.js";
+import { runMaintenance } from "./maintenance.js";
 
 const helmet = helmetModule as unknown as (options?: object) => express.RequestHandler;
 
@@ -43,6 +44,13 @@ app.get("/health", async (_request, response) => {
   } catch {
     response.status(503).json({ data: { status: "degraded", database: "unavailable", timestamp: new Date().toISOString() } });
   }
+});
+app.get("/api/maintenance", async (request, response) => {
+  if (!config.CRON_SECRET || request.get("authorization") !== `Bearer ${config.CRON_SECRET}`) {
+    response.status(401).json({ error: { code: "UNAUTHORIZED", message: "Unauthorized." } });
+    return;
+  }
+  response.json({ data: await runMaintenance() });
 });
 app.get("/api/openapi.json", (_request, response) => response.json(openapi));
 app.use("/api/docs", swaggerUi.serve, swaggerUi.setup(openapi, { customSiteTitle: "GoalSpring API" }));

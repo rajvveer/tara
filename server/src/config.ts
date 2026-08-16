@@ -17,6 +17,7 @@ const schema = z.object({
   RESET_FROM_EMAIL: z.string().default(""),
   FIREBASE_SERVICE_ACCOUNT_JSON: z.string().default(""),
   FIREBASE_SERVICE_ACCOUNT_FILE: z.string().default(""),
+  CRON_SECRET: z.union([z.literal(""), z.string().min(16)]).default(""),
   SARVAM_API_KEY: z.string().default(""),
   GROQ_API_KEY: z.string().default(""),
   APPLE_BUNDLE_ID: z.string().default(""),
