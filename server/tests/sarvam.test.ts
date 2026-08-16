@@ -27,7 +27,7 @@ describe("voice onboarding providers", () => {
             objective: "Run a first 5K",
             targetDate,
             preferredDays: ["Fri", "Mon", "Wed"],
-            preferredTime: "Morning",
+            preferredTime: "08:00",
             workingFrequency: 3,
             progressStyle: "Gentle",
             constraints: "",
@@ -143,6 +143,95 @@ describe("voice onboarding providers", () => {
     expect(result.answers.workingFrequency).toBe(3);
     const aiBody = JSON.parse(String((mockedFetch.mock.calls[1]?.[1] as RequestInit).body));
     expect(JSON.parse(aiBody.messages[1].content).currentAnswers.workingFrequency).toBe(3);
+  });
+
+  it("keeps a multi-step goal and repairs a repeated goal question", async () => {
+    const mockedFetch = vi.fn()
+      .mockResolvedValueOnce(json({
+        transcript: "My goal is to create an app and publish it to the App Store",
+        language_code: "en-IN",
+      }))
+      .mockResolvedValueOnce(json({
+        choices: [{ message: { content: JSON.stringify({
+          reply: "What is your goal?",
+          answers: {
+            name: "Aman",
+            objective: null,
+            targetDate: null,
+            preferredDays: null,
+            preferredTime: null,
+            workingFrequency: null,
+            progressStyle: null,
+            constraints: null,
+          },
+        }) } }],
+      }))
+      .mockResolvedValueOnce(json({
+        choices: [{ message: { content: JSON.stringify({
+          reply: "Creating and publishing your app is clear. When would you like it live?",
+        }) } }],
+      }))
+      .mockResolvedValueOnce(json({ audios: ["UklGRg=="] }));
+    vi.stubGlobal("fetch", mockedFetch);
+
+    const result = await voiceOnboardingTurn({
+      audioBase64: wav(),
+      mimeType: "audio/wav",
+      answers: { name: "Aman" },
+    });
+
+    expect(result.answers.objective).toBe("create an app and publish it to the App Store");
+    expect(result.reply).toContain("Creating and publishing your app");
+    const aiBody = JSON.parse(String((mockedFetch.mock.calls[1]?.[1] as RequestInit).body));
+    expect(JSON.parse(aiBody.messages[1].content).currentAnswers.objective)
+      .toBe("create an app and publish it to the App Store");
+    expect(mockedFetch).toHaveBeenCalledTimes(4);
+  });
+
+  it("preserves 11am and repairs a repeated time-choice question", async () => {
+    const targetDate = new Date(Date.now() + 90 * 86_400_000).toISOString().slice(0, 10);
+    const mockedFetch = vi.fn()
+      .mockResolvedValueOnce(json({ transcript: "11am", language_code: "en-IN" }))
+      .mockResolvedValueOnce(json({
+        choices: [{ message: { content: JSON.stringify({
+          reply: "Would you prefer morning, afternoon, or evening?",
+          answers: {
+            name: "Aman",
+            objective: "Build and publish an app",
+            targetDate,
+            preferredDays: ["Mon", "Wed", "Fri"],
+            preferredTime: null,
+            workingFrequency: 3,
+            progressStyle: null,
+            constraints: null,
+          },
+        }) } }],
+      }))
+      .mockResolvedValueOnce(json({
+        choices: [{ message: { content: JSON.stringify({
+          reply: "11am works. How much progress detail would you like?",
+        }) } }],
+      }))
+      .mockResolvedValueOnce(json({ audios: ["UklGRg=="] }));
+    vi.stubGlobal("fetch", mockedFetch);
+
+    const result = await voiceOnboardingTurn({
+      audioBase64: wav(),
+      mimeType: "audio/wav",
+      answers: {
+        name: "Aman",
+        objective: "Build and publish an app",
+        targetDate,
+        preferredDays: ["Mon", "Wed", "Fri"],
+        workingFrequency: 3,
+      },
+    });
+
+    expect(result.answers.preferredTime).toBe("11:00");
+    expect(result.reply).toContain("11am works");
+    const aiBody = JSON.parse(String((mockedFetch.mock.calls[1]?.[1] as RequestInit).body));
+    expect(JSON.parse(aiBody.messages[1].content).currentAnswers.preferredTime).toBe("11:00");
+    expect(mockedFetch).toHaveBeenCalledTimes(4);
   });
 
   it("does not mistake Bengali text with a shared danda for Hindi", async () => {

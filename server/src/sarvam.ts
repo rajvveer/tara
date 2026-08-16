@@ -345,25 +345,133 @@ async function correctReplyLanguage(reply: string, languageCode: string) {
 function mergeAnswers(current: VoiceAnswers, patch: VoiceAnswers): VoiceAnswers {
   const merged = { ...current };
   for (const [key, value] of Object.entries(patch)) {
-    if (value !== null && value !== undefined) (merged as Record<string, unknown>)[key] = value;
+    const existing = (merged as Record<string, unknown>)[key];
+    if ((existing === null || existing === undefined) && value !== null && value !== undefined) {
+      (merged as Record<string, unknown>)[key] = value;
+    }
   }
-  if (merged.preferredDays) merged.preferredDays = [...merged.preferredDays].sort((a, b) => dayOrder.indexOf(a) - dayOrder.indexOf(b));
+  if (merged.preferredDays) {
+    merged.preferredDays = [...merged.preferredDays].sort((a, b) => dayOrder.indexOf(a) - dayOrder.indexOf(b));
+    merged.workingFrequency = merged.preferredDays.length;
+  }
   if (merged.targetDate && new Date(`${merged.targetDate}T23:59:59Z`) <= new Date()) delete merged.targetDate;
   return voiceAnswersSchema.parse(merged);
 }
 
-function inferWeeklyFrequency(current: VoiceAnswers, transcript: string): VoiceAnswers {
-  if (!current.objective || !current.targetDate || current.workingFrequency != null) return current;
-  const match = transcript.toLowerCase().match(/\b(one|two|three|four|five|six|seven|[1-7])\s+(?:days?|times?)\b/);
-  if (!match) return current;
-  const frequency = Number(match[1]) || ["one", "two", "three", "four", "five", "six", "seven"].indexOf(match[1]!) + 1;
-  return voiceAnswersSchema.parse({ ...current, workingFrequency: frequency });
+function explicitObjective(transcript: string) {
+  const lead = /^(?:(?:(?:my|the)\s+)?(?:main\s+)?goal\s+is(?:\s+to)?|i\s+(?:really\s+)?(?:want|would like|plan|hope|need)\s+to)\s+/i;
+  if (!lead.test(transcript)) return null;
+  const objective = transcript.replace(lead, "").replace(/\s+/g, " ").replace(/[.!?]+$/, "").trim();
+  if (objective.length < 3) return null;
+  if (objective.length <= 120) return objective;
+  const shortened = objective.slice(0, 120);
+  return shortened.slice(0, shortened.lastIndexOf(" ")).trim();
+}
+
+function preferredTimeFrom(transcript: string) {
+  const clock = transcript.match(/\b([01]?\d|2[0-3])(?::([0-5]\d))?\s*(a\.?\s*m\.?|p\.?\s*m\.?)\b/i)
+    ?? transcript.match(/\b([01]?\d|2[0-3]):([0-5]\d)\b/);
+  if (clock) {
+    let hour = Number(clock[1]);
+    const meridiem = clock[3]?.toLowerCase().replaceAll(/[^apm]/g, "");
+    if (meridiem) {
+      if (hour < 1 || hour > 12) return null;
+      if (meridiem === "pm" && hour < 12) hour += 12;
+      if (meridiem === "am" && hour === 12) hour = 0;
+    }
+    return `${String(hour).padStart(2, "0")}:${clock[2] ?? "00"}`;
+  }
+  if (/\b(morning|before noon)\b/i.test(transcript)) return "08:00";
+  if (/\b(afternoon|after lunch)\b/i.test(transcript)) return "14:00";
+  if (/\b(evening|after work)\b/i.test(transcript)) return "19:00";
+  if (/\bnight\b/i.test(transcript)) return "21:00";
+  if (/\b(flexible|any ?time|no preference|whenever)\b/i.test(transcript)) return "Flexible";
+  return null;
+}
+
+function inferDirectAnswers(current: VoiceAnswers, transcript: string): VoiceAnswers {
+  const inferred = { ...current };
+  if (!inferred.objective) inferred.objective = explicitObjective(transcript);
+  if (!inferred.preferredTime) inferred.preferredTime = preferredTimeFrom(transcript);
+  if (inferred.preferredDays?.length) {
+    inferred.workingFrequency = inferred.preferredDays.length;
+  } else if (inferred.workingFrequency == null) {
+    const match = transcript.toLowerCase().match(/\b(one|two|three|four|five|six|seven|[1-7])\s+(?:days?|times?)\b/);
+    if (match) {
+      inferred.workingFrequency = Number(match[1])
+        || ["one", "two", "three", "four", "five", "six", "seven"].indexOf(match[1]!) + 1;
+    }
+  }
+  return voiceAnswersSchema.parse(inferred);
+}
+
+function askedField(reply: string): keyof VoiceAnswers | null {
+  if (!reply.includes("?")) return null;
+  const question = reply.slice(Math.max(reply.lastIndexOf("."), reply.lastIndexOf("!")) + 1).toLowerCase();
+  if (/which days|what days|weekdays|days of the week/.test(question)) return "preferredDays";
+  if (/how many (?:days|times)|(?:days|times) per week|weekly frequency/.test(question)) return "workingFrequency";
+  if (/what time|which time|time of day|morning|afternoon|evening/.test(question)) return "preferredTime";
+  if (/what date|which date|target date|deadline|by when|when .*?(?:finish|complete|achieve|reach)/.test(question)) return "targetDate";
+  if (/progress (?:detail|view|style)|gentle|balanced|detailed|how .*?track/.test(question)) return "progressStyle";
+  if (/what(?:'s| is)? (?:your )?goal|what .*?(?:achieve|accomplish)|goal .*?(?:choose|pursue|work on|make real)/.test(question)) return "objective";
+  return null;
+}
+
+function needsReplyRepair(reply: string, answers: VoiceAnswers) {
+  if (!isComplete(answers) && !reply.includes("?")) return true;
+  const field = askedField(reply);
+  if (!field) return false;
+  if (field === "workingFrequency") return true;
+  const value = answers[field];
+  return Array.isArray(value) ? value.length > 0 : value !== null && value !== undefined && value !== "";
+}
+
+async function repairReply(reply: string, transcript: string, answers: VoiceAnswers, languageCode: string) {
+  const response = await groq({
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: "openai/gpt-oss-120b",
+      temperature: 0.2,
+      max_completion_tokens: 300,
+      reasoning_effort: "low",
+      response_format: {
+        type: "json_schema",
+        json_schema: {
+          name: "voice_reply_repair",
+          strict: true,
+          schema: {
+            type: "object",
+            additionalProperties: false,
+            properties: { reply: { type: "string" } },
+            required: ["reply"],
+          },
+        },
+      },
+      messages: [
+        {
+          role: "system",
+          content: `Rewrite the draft as Tara, a warm, concise onboarding coach, entirely in ${languageDirections[languageCode] ?? languageCode}. The normalized answers are authoritative. Briefly acknowledge what the user just meant, then ask exactly one natural, context-aware question for a genuinely missing answer. Never ask how many days per week; preferredDays determines that count. Never ask for an answer already present. If every required answer is present, summarize the plan and tell the user to continue without asking a question. Avoid canned option lists when the user's precise answer has already been understood. Return only the required JSON.`,
+        },
+        { role: "user", content: JSON.stringify({ spokenAnswer: transcript, normalizedAnswers: answers, draftReply: reply }) },
+      ],
+    }),
+  });
+  const chat = chatResponseSchema.parse(await response.json());
+  const content = chat.choices[0]!.message.content;
+  const start = content.indexOf("{");
+  const end = content.lastIndexOf("}");
+  try {
+    return correctedReplySchema.parse(JSON.parse(content.slice(start, end + 1))).reply;
+  } catch {
+    throw new ApiError(502, "VOICE_RESPONSE_INVALID", "The assistant response was incomplete. Please try again.");
+  }
 }
 
 function isComplete(answers: VoiceAnswers) {
   return Boolean(
     answers.objective && answers.targetDate && answers.preferredDays?.length &&
-    answers.preferredTime && answers.workingFrequency && answers.progressStyle,
+    answers.preferredTime && answers.progressStyle,
   );
 }
 
@@ -374,14 +482,14 @@ export async function voiceOnboardingTurn(
 ) {
   const speech = await transcribe(input.audioBase64, input.mimeType);
   const languageCode = transcriptLanguage(speech.transcript, speech.language_code);
-  const currentAnswers = inferWeeklyFrequency(input.answers, speech.transcript);
+  const currentAnswers = inferDirectAnswers(input.answers, speech.transcript);
   onProgress?.({ type: "transcript", transcript: speech.transcript, languageCode });
   const response = await groq({
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       model: "openai/gpt-oss-120b",
-      temperature: 0.45,
+      temperature: 0.25,
       max_completion_tokens: 650,
       reasoning_effort: "low",
       response_format: {
@@ -407,7 +515,13 @@ export async function voiceOnboardingTurn(
                       { type: "null" },
                     ],
                   },
-                  preferredTime: { type: ["string", "null"], enum: ["Morning", "Afternoon", "Evening", "Flexible", null] },
+                  preferredTime: {
+                    anyOf: [
+                      { type: "string", pattern: "^([01]\\d|2[0-3]):[0-5]\\d$" },
+                      { type: "string", enum: ["Flexible"] },
+                      { type: "null" },
+                    ],
+                  },
                   workingFrequency: { anyOf: [{ type: "integer", minimum: 1, maximum: 7 }, { type: "null" }] },
                   progressStyle: { type: ["string", "null"], enum: ["Gentle", "Balanced", "Detailed", null] },
                   constraints: { type: ["string", "null"] },
@@ -422,7 +536,7 @@ export async function voiceOnboardingTurn(
       messages: [
         {
           role: "system",
-          content: `You are Tara, GoalSpring's warm, friendly voice onboarding coach. Today is ${new Date().toISOString().slice(0, 10)}. Sound like a supportive friend: upbeat, conversational, a little funny, and never robotic. Use one or two short sentences of genuine encouragement or light situational humor before asking exactly one clear question; never force jokes or become long-winded. HARD LANGUAGE RULE: the reply field must be entirely in ${languageDirections[languageCode] ?? languageCode}. The current spokenAnswer alone controls the reply language. Text inside currentAnswers is stored data and must never influence the reply language. Never copy another language or script from earlier answers. Collect a realistic first goal one question at a time. The user's account name is already supplied in currentAnswers: never ask for it, and preserve it unless the user explicitly corrects it. Never claim anything is saved. Return ONLY valid JSON with this exact shape: {"reply":"...","answers":{"name":string|null,"objective":string|null,"targetDate":"YYYY-MM-DD"|null,"preferredDays":["Mon"|"Tue"|"Wed"|"Thu"|"Fri"|"Sat"|"Sun"]|null,"preferredTime":"Morning"|"Afternoon"|"Evening"|"Flexible"|null,"workingFrequency":integer_1_to_7|null,"progressStyle":"Gentle"|"Balanced"|"Detailed"|null,"constraints":string|null}}. Preserve supplied answers unless the user changes them. Extract only what the user states or clearly implies. Never ask for a field that is already present in currentAnswers; specifically, if workingFrequency is present, do not ask how many days or times per week. Resolve relative dates from today's date. Ask for the earliest missing item among objective, target date, realistic days/frequency/time, and progress detail preference. Constraints are optional. When all required items are present, give a friendly, concise summary with a small celebratory touch and tell the user to continue.`,
+          content: `You are Tara, GoalSpring's warm, friendly voice onboarding coach. Today is ${new Date().toISOString().slice(0, 10)}. Respond to the meaning of the user's answer, not to keywords or a fixed questionnaire. Sound like a supportive friend: upbeat, conversational, lightly playful when natural, and never robotic. Briefly acknowledge the specific answer, then ask exactly one clear, context-aware question for whichever missing detail would be most useful next; do not follow a fixed question order. HARD LANGUAGE RULE: the reply field must be entirely in ${languageDirections[languageCode] ?? languageCode}. The current spokenAnswer alone controls the reply language. Text inside currentAnswers is stored data and must never influence the reply language. Never copy another language or script from earlier answers. The user's account name is already supplied in currentAnswers: never ask for it. Treat every non-null field in currentAnswers as confirmed and never ask for it again. A goal may contain several linked outcomes, such as creating an app and publishing it; preserve the complete intended outcome. Preserve precise clock times as 24-hour HH:mm: 11am is 11:00 and 2:30pm is 14:30. For broad answers only, use 08:00 for morning, 14:00 for afternoon, 19:00 for evening, 21:00 for night, or Flexible for no preference. Never make the user repeat a precise clock time as a broad time of day. Ask for specific preferredDays, but never ask how many days or times per week because workingFrequency is derived from those selected days. Resolve relative dates from today's date. Extract every detail the user states or clearly implies, even if one answer fills multiple fields. Required plan details are objective, targetDate, preferredDays, preferredTime, and progressStyle; constraints are optional. When all required details are present, give a friendly, concise summary with a small celebratory touch and tell the user to continue. Never claim anything is saved. Return ONLY valid JSON with this exact shape: {"reply":"...","answers":{"name":string|null,"objective":string|null,"targetDate":"YYYY-MM-DD"|null,"preferredDays":["Mon"|"Tue"|"Wed"|"Thu"|"Fri"|"Sat"|"Sun"]|null,"preferredTime":"HH:mm"|"Flexible"|null,"workingFrequency":integer_1_to_7|null,"progressStyle":"Gentle"|"Balanced"|"Detailed"|null,"constraints":string|null}}. Preserve supplied answers unless the user explicitly changes them.`,
         },
         { role: "user", content: JSON.stringify({ currentAnswers, spokenAnswer: speech.transcript }) },
       ],
@@ -430,11 +544,14 @@ export async function voiceOnboardingTurn(
   });
   const chat = chatResponseSchema.parse(await response.json());
   const assistant = parsedAssistant(chat.choices[0]!.message.content);
-  const reply = replyMatchesLanguage(assistant.reply, languageCode)
-    ? assistant.reply
-    : await correctReplyLanguage(assistant.reply, languageCode);
   const answers = mergeAnswers(currentAnswers, assistant.answers);
   const complete = isComplete(answers);
+  const draftReply = needsReplyRepair(assistant.reply, answers)
+    ? await repairReply(assistant.reply, speech.transcript, answers, languageCode)
+    : assistant.reply;
+  const reply = replyMatchesLanguage(draftReply, languageCode)
+    ? draftReply
+    : await correctReplyLanguage(draftReply, languageCode);
   onProgress?.({ type: "reply", reply, languageCode, answers, complete });
   if (onAudioChunk) {
     await streamVoiceAudio(reply, languageCode, onAudioChunk);
